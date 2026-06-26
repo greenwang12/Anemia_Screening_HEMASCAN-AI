@@ -1,0 +1,58 @@
+{
+  "summary": "Full e2e validation of Anemia Screening App. Backend: 12/12 pytest tests passed (health, auth register/login/me/duplicate/invalid, screenings create with Gemini vision, list-without-images, get-full, delete, fusion threshold matches risk_percent). Frontend: full UX flows verified including landing, register, login, protected redirects, screening upload + Gemini analysis + redirect to results page with all 3 RiskCards (eye/nail/fusion) + GradCAM sliders + findings + Download report button, history listing, FAQ on Learn page, logout. Gemini analysis worked end-to-end (returned valid JSON, fusion threshold respected).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "History page",
+        "issue": "After completing a new screening on /screen and navigating to /history (after having previously visited /history earlier in the session when it was empty), the list still shows 'No screenings yet'. The newly-created screening only appears after a full page reload. Looks like History.js does not refetch on mount/route-change (stale cache). Backend GET /api/screenings returns the record correctly (verified by backend tests).",
+        "selector": "[data-testid=\"history-list\"]",
+        "priority": "MEDIUM"
+      },
+      {
+        "component": "Layout/Toast",
+        "issue": "Success toast ('Welcome back', 'Analysis complete') is rendered overlapping the center header nav links (New scan / History / Learn). On 1920px desktop the toast sits exactly on top of the nav buttons for ~3-4 seconds, blocking clicks during that window. Consider positioning toasts to top-right and below the header.",
+        "selector": "header nav vs toast container",
+        "priority": "LOW"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "Header / Toast",
+        "issues": ["Toast notification overlaps the centered nav menu on desktop (1920w). Should be offset below header or moved to a corner that doesn't intersect navigation."]
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_anemia_backend.py",
+    "/app/backend/tests/conftest.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Fix History.js to refetch screenings on mount / on route change (e.g., useEffect with location dep, or invalidate cache after POST /api/screenings).",
+    "Reposition success toasts so they don't sit over the header nav links (move to top-right corner, or below header).",
+    "Optional: Tighten CORS — currently allow_origins=['*'] with allow_credentials=False; cookie is set with samesite='none' secure=true, so cookies will still flow on same origin but cross-origin cookie auth would be blocked. App uses Bearer header so this is OK but worth noting."
+  ],
+  "critical_code_review_comments": [
+    "server.py line 388: allow_credentials=False with allow_origins=['*'] is intentional but disables cookie-based auth for cross-origin clients. Since frontend uses Bearer token from localStorage this is fine, but the access_token cookie that is set will never be sent cross-origin. Either drop the cookie or set explicit origin + allow_credentials=True.",
+    "server.py: No brute-force lockout / rate limiting on /api/auth/login (auth_testing.md recommends 5-fail lockout). Acceptable for a demo prototype but worth flagging.",
+    "server.py compute_fusion uses confidence 0 with floor 0.1 — correct, but when one modality has confidence 0 (image unusable) it still contributes 0.1 weight. Consider zero-weight when image_type marked unusable.",
+    "Screenings store full base64 images in MongoDB documents. For larger images this could push docs past 16MB. Consider GridFS or object storage if you scale beyond demo."
+  ],
+  "updated_files": [
+    "/app/backend/tests/conftest.py",
+    "/app/backend/tests/test_anemia_backend.py"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "~95%"},
+  "test_credentials": "Admin: admin@anemiacheck.app / Admin@123 (seed verified working). Random test users registered via /api/auth/register.",
+  "seed_data_creation": "Backend pytest creates several TEST_-prefixed users via /api/auth/register and one screening that is then deleted in test_delete_screening. Frontend e2e created and left one screening for admin (and then could not delete from History page due to stale-cache bug — not blocking).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend pytest suite at /app/backend/tests/test_anemia_backend.py is reusable as regression. Gemini call takes ~5-8s per image so screening with both images returns in <15s. Toast component overlaps nav for ~3s after login/analysis-complete; if writing playwright, either dismiss the toast (close button) or wait 4s before clicking nav. Frontend stores JWT in localStorage AND backend sets access_token httpOnly cookie. CORS uses wildcard + no-credentials, so prefer Bearer header.",
+  "rca of the issue": "History page stale-cache bug: History.js likely fetches on initial mount but doesn't re-fetch when the user returns to it after creating a new screening (no dependency on location/navigation). Quick fix: useEffect(() => { fetchScreenings(); }, [location.pathname]) or invalidate query in Screen.js after successful POST /api/screenings before navigating to /results."
+}

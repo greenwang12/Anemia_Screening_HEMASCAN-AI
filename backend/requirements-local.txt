@@ -1,0 +1,7 @@
+# Local-only dependencies — NOT installed in production deployment.
+# TensorFlow + Keras are needed for running your own trained MobileNetV2 .h5
+# weights on a workstation / VS Code. The production deploy gracefully falls
+# back to a Gemini vision LLM when these are missing.
+#
+# Install with:   pip install -r requirements-local.txt
+tensorflow>=2.15.0
