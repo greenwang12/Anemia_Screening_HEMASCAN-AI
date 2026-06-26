@@ -1,0 +1,40 @@
+{
+  "summary": "Retest after iteration_3 fixes. Backend: 11/11 pytest pass against the new REACT_APP_BACKEND_URL (https://2ec88571-...preview.emergentagent.com). Verified directly: /api/admin/models reports eye_loaded=true & nail_loaded=true with paths .keras for both; eye-only screening returns engine='mobilenetv2' (NOT gemini-fallback) with non-empty gradcam_heatmap_base64 (~2244 chars) and gradcam_layer; nail-only screening also returns engine='mobilenetv2' with full binary-blend extras and no class_probs/top_class/top_prob/p_class_anemia anywhere. Polarity sanity (pale > red) confirmed in pytest. Frontend E2E (real browser): /register → /login navigation works, [data-testid='register-success-banner'] is visible with correct text, email is pre-filled on /login with the just-registered address, sign-in lands on /screen, 'How it works' sidebar with three plain-English bullets is shown (no 'Pipeline' text), footer reads 'AI vision · Visual heatmaps · Combined score · Mobile-ready' (no 'CNN'/'Grad-CAM'/'Fusion'). Results page after nail-only screening: [data-testid='nail-class-probs'] absent (count=0), [data-testid='nail-clinical-signs'] present (count=1), card subtitles 'Eye check', 'Nail check', 'Overall estimate' all visible, bottom heading 'Two signals, one easy-to-read result' present. All review-request items verified.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "screenings (eye/nail).gradcam_layer", "issue": "gradcam_layer is returned as 'efficientnetb0' for BOTH eye and nail because the eye_mobilenetv2.keras file's inner submodel is internally named 'efficientnetb0' (labelling artefact from training script, per request notes). Functionality is correct (real CNN runs, heatmap is generated), but the layer name shown to users/admin is misleading — consider mapping to a friendlier label or renaming the inner layer."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_anemia_backend.py",
+    "/app/backend/tests/conftest.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "OPTIONAL: rename the inner Keras submodel of eye_mobilenetv2.keras (or override the reported gradcam_layer string) so eye screenings show 'mobilenetv2' instead of the misleading 'efficientnetb0' layer name. Functionally fine, cosmetic only."
+  ],
+  "critical_code_review_comments": [
+    "EYE_MODEL_PATH .keras→.h5 auto-fallback now works as intended — /api/admin/models resolves to /app/backend/ml/models/eye_mobilenetv2.keras and the model loads successfully.",
+    "Eye Grad-CAM ROI masking pipeline is now actually exercised end-to-end (engine='mobilenetv2', heatmap len ~2244). The iteration_3 silent fallback to gemini is fixed.",
+    "Binary nail pipeline contract holds: model_extras has exactly {p_model_anemia, p_features_anemia, clinical_features (6 keys: pallor, koilonychia, platonychia, ridging, brittleness, yellowing), feature_weights (sum=1.0), blend_weights={model:0.6, features:0.4}} and forbidden keys {class_probs, top_class, top_prob, p_class_anemia} are absent at every level of nail_result.",
+    "Polarity holds: pale (235,215,215) p_features ≈ 0.32 > red (200,80,90) p_features ≈ 0.18; pale risk_percent >= red risk_percent.",
+    "/api/auth/register correctly returns no token and sets no access_token cookie; /api/auth/me with no session returns 401.",
+    "Frontend register→login→screen flow is fully wired with the corrected REACT_APP_BACKEND_URL. Success banner, email pre-fill, 'How it works' sidebar, and new footer copy are all live in the deployed UI.",
+    "Results page no longer renders nail-class-probs. nail-clinical-signs section is present and shows the 6 weighted clinical features."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100% (11/11)", "frontend": "100% — all review-request E2E checks pass"},
+  "test_credentials": "Admin: admin@anemiacheck.app / Admin@123. Fresh TEST_fe_<uuid>@example.com / Passw0rd! per FE run, TEST_user_<uuid> per pytest run.",
+  "seed_data_creation": "Per pytest run: 2-3 TEST_-prefixed users (kept) and 4-5 short-lived screenings (deleted via /api/screenings/{id} in test teardown). Per FE run: 1 TEST_fe_ user (kept) and 1 nail-only screening (kept — admin can delete later).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "All iteration_3 blockers resolved. Backend regression suite at /app/backend/tests/test_anemia_backend.py covers health, auth (no auto-login), binary nail pipeline, eye Grad-CAM, polarity, and guards (11 tests, ~17s parallel). Run with: cd /app/backend/tests && REACT_APP_BACKEND_URL=https://2ec88571-f9db-4c56-acfa-fc5ea3ec0cf9.preview.emergentagent.com python -m pytest -v --tb=short. Frontend public URL works as expected. Both eye and nail .keras models load. Only cosmetic issue left is the gradcam_layer string showing 'efficientnetb0' for the eye model (inner submodel name).",
+  "rca of the issue": "N/A — both iteration_3 blockers (eye .h5/.keras mismatch and FE URL mismatch) are fully resolved and verified end-to-end."
+}

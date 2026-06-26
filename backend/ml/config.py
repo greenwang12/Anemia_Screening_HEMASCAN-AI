@@ -7,7 +7,9 @@ ML_DIR = Path(__file__).parent
 MODELS_DIR = ML_DIR / "models"
 MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
-EYE_MODEL_PATH = MODELS_DIR / "eye_mobilenetv2.h5"
+_EYE_KERAS = MODELS_DIR / "eye_mobilenetv2.keras"
+_EYE_H5 = MODELS_DIR / "eye_mobilenetv2.h5"
+EYE_MODEL_PATH = _EYE_KERAS if _EYE_KERAS.exists() else _EYE_H5
 
 # New binary nail model (EfficientNetB0). Falls back to legacy .h5 if missing.
 _NAIL_KERAS = MODELS_DIR / "nail_efficientnetb0.keras"

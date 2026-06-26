@@ -78,7 +78,7 @@ export default function Layout({ children }) {
       <footer className="border-t border-[var(--border)] bg-[var(--surface)] py-6">
         <div className="max-w-6xl mx-auto px-5 text-xs text-[var(--muted)] flex flex-col sm:flex-row justify-between gap-2">
           <div>© {new Date().getFullYear()} HemaScan • Research prototype, not a medical device.</div>
-          <div className="font-mono">CNN · Grad-CAM · Fusion · Mobile-ready</div>
+          <div className="font-mono">AI vision · Visual heatmaps · Combined score · Mobile-ready</div>
         </div>
       </footer>
     </div>
