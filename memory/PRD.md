@@ -1,80 +1,67 @@
-# HemaScan — Anemia Screening AI
+# HemaScan — Anemia Screening (PRD)
 
-## Problem Statement
-Build an anemia screening web app based on eye pallor and nail-bed analysis using a CNN architecture with Grad-CAM explainable AI. First build single baseline models for eye and nail, then a fusion model that combines both. Plan to deploy to mobile later.
+## Original problem
+Existing HemaScan app shipped a 6-class MobileNetV2 nail classifier with a
+custom OpenCV clinical-feature analyzer. The user replaced the model with a
+new **binary anemia / non-anemia EfficientNetB0** nail model and asked us to:
+
+1. Remove the 6-class step entirely (no `NAIL_CLASSES`, no `top_class`, no
+   `class_probs` in the API response).
+2. Keep the OpenCV clinical-feature analyzer (pallor, koilonychia, ridging,
+   brittleness, platonychia, yellowing) driving the rich story.
+3. Blend the new model's `P(anemia)` with the OpenCV features (60% / 40%).
+4. Keep Grad-CAM heatmaps but localise them strictly to the nail-bed (nail
+   modality) and the conjunctiva ROI (eye modality).
+5. After register, DO NOT auto-login the user — redirect to `/login` with a
+   "Account created successfully" banner.
+6. Rewrite the technical pipeline / fusion strategy copy in plain English for
+   end users.
 
 ## Architecture
-- **Backend**: FastAPI + SQLite (aiosqlite via `backend/store.py`). Routes prefixed with `/api`.
-- **Frontend**: React 19 + Tailwind + shadcn/ui (light theme, Outfit / Manrope fonts).
-- **Auth**: JWT email+password (bcrypt). Token in httpOnly cookie + localStorage Bearer.
-- **AI inference**: `emergentintegrations.LlmChat` with `gemini-3-flash-preview` acting as a CNN proxy.
-  Returns structured JSON: `risk_percent`, `risk_label`, `confidence`, `key_findings`, `pallor_score`, `attention_regions`, `reasoning`.
-- **Grad-CAM placeholder**: LLM returns normalized `attention_regions` (cx, cy, radius, intensity); frontend `<canvas>` renders a radial-gradient heatmap overlay with an opacity slider.
-- **Fusion model**: Confidence-weighted average of the two baseline risk scores (late fusion).
+- Backend: FastAPI + SQLite + TensorFlow 2.x + OpenCV.
+  - `ml/config.py` — model paths, NAIL_ANEMIA_INDEX polarity flag.
+  - `ml/inference.py` — TTA inference + sigmoid→P(anemia) inversion + 60/40 blend.
+  - `ml/nail_features.py` — 6-detector OpenCV analyzer + `combine_nail_signals`.
+  - `ml/gradcam.py` — manual-walk grad model for nested submodels +
+    OpenCV nail-bed ROI mask + conjunctiva ROI hard clamp.
+  - `ml/pipeline.py` — async wrapper used by `server.py`.
+- Frontend: React 18 + Tailwind + Sonner toasts.
+- Models on disk:
+  - `eye_mobilenetv2.keras`  (binary sigmoid, P(anemia) directly)
+  - `nail_efficientnetb0.keras` (binary sigmoid, P(non-anemia) → inverted)
 
-## Personas
-- Clinician / researcher running prototype screenings.
-- Patient / public users wanting an at-home indicator.
+## What's been implemented (Jan 2026, this session)
+- ✅ Binary nail head wired: `NAIL_ANEMIA_INDEX=1` inverts sigmoid → P(anemia).
+- ✅ 60% model / 40% OpenCV blend (`MODEL_WEIGHT`, `FEATURE_WEIGHT`).
+- ✅ All references to `class_probs`, `top_class`, `top_prob`,
+   `p_class_anemia`, `NAIL_CLASSES` removed from API and UI.
+- ✅ Grad-CAM rebuild for nested EfficientNetB0 submodel (uses submodel as
+   feature extractor; manual walk with `training=False`).
+- ✅ Nail Grad-CAM: HSV-based nail-bed detection +
+   brightness/saturation-weighted mask hard-applied to the heatmap.
+- ✅ Eye Grad-CAM: ROI rectangle hard-clamps the spread heatmap to the
+   detected conjunctiva region.
+- ✅ Register endpoint no longer returns a token / sets a cookie. Frontend
+   `register()` no longer persists user. `/register` redirects to `/login`
+   with `state.justRegistered=true`. `/login` shows the success banner and
+   pre-fills the email.
+- ✅ "Pipeline" / "Fusion strategy" / "Attention map" / "CNN" copy reworded:
+   - Screen sidebar: "How it works" + plain bullets.
+   - Results risk cards: "Eye check / Nail check / Overall estimate".
+   - Results bottom: "Two signals, one easy-to-read result".
+   - GradCamViewer chip: "Where the AI looked".
+   - Findings card: "Paleness level" / "How sure we are".
+   - Footer: "AI vision · Visual heatmaps · Combined score · Mobile-ready".
+- ✅ `EYE_MODEL_PATH` auto-resolves `.keras` → `.h5` to match the nail loader.
 
-## Core Requirements (locked)
-- Register / Login / Logout (JWT)
-- Upload eye image and/or nail image
-- Run AI analysis → 3 results (eye baseline, nail baseline, fusion)
-- Grad-CAM-style heatmap viewer for each image
-- Patient history (MongoDB)
-- Printable PDF report
-- Educational content + FAQ
-- Mobile-responsive
+## Test status
+- Backend pytest: **11/11 pass** (iteration_4).
+- Frontend E2E: **100%** of review-request flows verified end-to-end.
 
-## Implemented (2026-02 → first finish)
-- Full JWT auth (register, login, logout, /me) with bcrypt
-- Admin user seeded: admin@anemiacheck.app / Admin@123
-- POST /api/screenings → Gemini 3 Flash analyzes uploaded images in parallel, fusion computed server-side
-- GET /api/screenings, GET /api/screenings/{id}, DELETE /api/screenings/{id}
-- Frontend pages: Landing, Login, Register, Screen, Results, History, Learn
-- Grad-CAM viewer with opacity slider, three RiskCards, findings cards, fusion explanation block
-- Printable HTML report via window.print
+## Backlog / known minor
+- gradcam_layer string reads "efficientnetb0" for the eye model too because
+  the file's inner submodel is named that way. Cosmetic only.
+- Optional: friendlier `gradcam_layer` label in the response.
 
-## Implemented (2026-02 → second iteration: real CNN integration)
-- Full `backend/ml/` package: config, quality, preprocessing (with TTA), model_loader, inference, gradcam, fusion, pipeline
-- TensorFlow MobileNetV2 .h5 loading + lazy inference
-- Real Grad-CAM via tf.GradientTape on last conv layer (`Conv_1`)
-- Test-Time Augmentation (orig + h-flip + ±10° rotation + center-crop)
-- Image quality gate (Laplacian variance + brightness)
-- Nail 6-class softmax → anemia mapping (blue_finger + clubbing + pitting)
-- Improved fusion: noisy-OR + confidence-weighted + disagreement penalty + optional sklearn meta-learner (`fusion_meta.npz`)
-- Admin endpoints: GET/POST/DELETE /api/admin/models/{eye|nail}
-- New /admin/models page with drag-drop .h5 upload
-- Frontend GradCamViewer renders real heatmap PNG when present, falls back to canvas
-- Results page shows nail 6-class probability breakdown with anemia-positive classes highlighted
-- /app/README.md with full architecture documentation for teacher review
-
-## Implemented (2026-02 → third iteration: SQLite migration)
-- Replaced MongoDB/motor with `aiosqlite`-backed `backend/store.py` (Mongo-compatible drop-in API: `find_one`, `insert_one`, `delete_one`, `find().sort().limit().to_list()`)
-- DB file auto-created at `backend/data/hemascan.db` on startup; tables `users` + `screenings` declared in `_TABLES` schema
-- Admin user is seeded on startup if missing
-- Verified end-to-end: register, login, /me, create/list/get/delete screening, duplicate-email 400, wrong-password 401, unauth 401
-- `aiosqlite==0.22.1` added to `backend/requirements.txt`
-- No external DB service needed — perfect for college mini-project / VS Code review
-
-## Backlog / Future
-**P1**
-- Connect a real PyTorch/TensorFlow CNN backend (replace LLM proxy)
-- Real Grad-CAM from the CNN gradients
-- Capacitor/Expo wrapper for mobile deployment
-
-**P2**
-- Camera capture flow (vs. file upload)
-- Rate limiting + brute-force lockout on /api/auth/login
-- Doctor dashboard / multi-patient organization
-- Aggregate analytics (population risk trends)
-- Hemoglobin estimate regression
-- Public read-only share links for reports
-
-## Test Credentials
-See `/app/memory/test_credentials.md`
-
-## Known Limitations
-- Images are stored as base64 in MongoDB (fine for demo, swap to object storage at scale)
-- CORS uses wildcard + Bearer token (no cross-origin cookies)
-- LLM call latency ~5–10s per image
+## Test credentials
+See `/app/memory/test_credentials.md`.
