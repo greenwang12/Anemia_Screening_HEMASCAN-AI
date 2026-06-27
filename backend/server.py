@@ -19,7 +19,6 @@ from fastapi import FastAPI, APIRouter, Depends, HTTPException, Request, Respons
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, EmailStr, Field
-from emergentintegrations.llm.chat import LlmChat, UserMessage, ImageContent
 
 # Local ML pipeline (real MobileNetV2 + Grad-CAM). Gracefully optional.
 from ml import pipeline as ml_pipeline
@@ -218,46 +217,20 @@ def _strip_data_url(b64: str) -> str:
     return b64
 
 async def analyze_image_with_gemini(image_base64: str, image_type: str) -> dict:
-    if not EMERGENT_LLM_KEY:
-        raise HTTPException(status_code=500, detail="LLM key not configured")
-    image_base64 = _strip_data_url(image_base64)
-    chat = LlmChat(
-        api_key=EMERGENT_LLM_KEY,
-        session_id=f"anemia-{uuid.uuid4()}",
-        system_message="You are a precise medical image analysis assistant. You always return only JSON when asked.",
-    ).with_model("gemini", "gemini-3-flash-preview")
-
-    user_msg = UserMessage(
-        text=ANALYSIS_PROMPT + f"\n\nThis image is of type: {image_type.upper()} (lower eyelid conjunctiva or fingernail bed).",
-        file_contents=[ImageContent(image_base64=image_base64)],
-    )
-    try:
-        response_text = await chat.send_message(user_msg)
-    except Exception as e:
-        logger.exception("LLM call failed")
-        raise HTTPException(status_code=502, detail=f"LLM analysis failed: {str(e)[:200]}")
-
-    try:
-        data = _extract_json(response_text if isinstance(response_text, str) else str(response_text))
-    except Exception as e:
-        logger.error(f"Parse failure. Raw response: {response_text}")
-        raise HTTPException(status_code=502, detail=f"Could not parse LLM response: {str(e)[:200]}")
-
-    # Normalize defensively
-    data["image_type"] = image_type
-    data["risk_percent"] = int(max(0, min(100, data.get("risk_percent", 0))))
-    if data["risk_percent"] < 35:
-        data["risk_label"] = "Low"
-    elif data["risk_percent"] <= 65:
-        data["risk_label"] = "Moderate"
-    else:
-        data["risk_label"] = "High"
-    data["confidence"] = float(max(0.0, min(1.0, data.get("confidence", 0.5))))
-    data["pallor_score"] = int(max(0, min(10, data.get("pallor_score", 0))))
-    data["key_findings"] = data.get("key_findings", [])[:4]
-    data["attention_regions"] = data.get("attention_regions", [])[:3]
-    data["reasoning"] = data.get("reasoning", "")
-    return data
+    """
+    Local fallback when no LLM is available.
+    Since the project has local ML models, this should normally never be used.
+    """
+    return {
+        "image_type": image_type,
+        "risk_percent": 0,
+        "risk_label": "Low",
+        "confidence": 0.0,
+        "key_findings": ["LLM fallback disabled"],
+        "pallor_score": 0,
+        "attention_regions": [],
+        "reasoning": "Local ML model is expected to perform the analysis.",
+    }
 
 def compute_fusion(eye: Optional[dict], nail: Optional[dict]) -> dict:
     """Late-fusion: weighted average of risk_percent and confidence."""
@@ -305,10 +278,10 @@ async def _analyze_modality(image_b64: str, image_type: str) -> dict:
     except Exception as e:
         logger.exception(f"ML pipeline failed for {image_type}: {e}")
     # Fallback
-    fallback = await analyze_image_with_gemini(image_b64, image_type)
-    fallback["engine"] = "gemini-fallback"
-    return fallback
-
+        raise HTTPException(
+        status_code=500,
+        detail=f"Local {image_type} model failed. Gemini fallback is disabled."
+    )
 
 def _fuse_results(eye: Optional[dict], nail: Optional[dict]) -> dict:
     """Use ml.fusion if available; otherwise compute_fusion."""

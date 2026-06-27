@@ -125,7 +125,8 @@ export default function ModelsAdmin() {
     setZipBusy(true);
     try {
       const token = localStorage.getItem("token");
-      const backendUrl = process.env.REACT_APP_BACKEND_URL;
+      const backendUrl =
+  process.env.REACT_APP_BACKEND_URL || "http://127.0.0.1:8000";
       const href = `${backendUrl}/api/admin/export?token=${encodeURIComponent(token || "")}`;
       // Open in a new tab so Chrome's preview-iframe sandbox doesn't swallow the download.
       // The backend response sets Content-Disposition: attachment, so the new tab will

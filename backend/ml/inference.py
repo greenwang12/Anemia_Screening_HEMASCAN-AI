@@ -9,8 +9,10 @@ from .config import (
     EYE_ANEMIA_INDEX, EYE_SIGMOID,
     NAIL_ANEMIA_INDEX, NAIL_SIGMOID,
     TEMP_EYE, TEMP_NAIL,
+    NAIL_CONFIDENT_ANEMIA_THRESHOLD,
+    NAIL_CONFIDENT_NON_ANEMIA_THRESHOLD,
 )
-from .preprocessing import tta_batch
+from .preprocessing import tta_batch, tta_batch_efficientnet
 from .nail_features import (
     analyze_nail_features, combine_nail_signals, CLINICAL_FEATURE_WEIGHTS,
     MODEL_WEIGHT, FEATURE_WEIGHT,
@@ -37,7 +39,7 @@ def _sigmoid_to_p_anemia(preds: np.ndarray, anemia_index: int) -> float:
 
 def predict_eye(model, img: Image.Image) -> dict:
     """Return P(anemia) for the eye image using TTA averaging."""
-    batch = tta_batch(img)
+    batch = tta_batch_efficientnet(img)
     preds = np.asarray(model.predict(batch, verbose=0))
 
     if EYE_SIGMOID or preds.shape[-1] == 1:
@@ -51,28 +53,30 @@ def predict_eye(model, img: Image.Image) -> dict:
     return {
         "p_anemia": p_anemia,
         "confidence": float(min(1.0, abs(p_anemia - 0.5) * 2 + 0.4)),
-        "model": "MobileNetV2-binary",
+        "model": "EfficientNetB0-binary",
     }
 
 
 def predict_nail(model, img: Image.Image) -> dict:
-    """Binary nail anemia classifier (EfficientNetB0 / MobileNetV2) blended
-    with the OpenCV clinical-sign analyzer.
+    """Binary nail anemia classifier (EfficientNetB0) blended with the
+    OpenCV clinical-sign analyzer.
 
     Pipeline:
-      1. Single-sigmoid model with TTA → P_model(anemia).
-         (Polarity controlled by NAIL_ANEMIA_INDEX, default = invert.)
+      1. EfficientNetB0 with TTA → P_model(anemia).
+         Raw [0, 255] input — model has Rescaling baked in.
+         Polarity controlled by NAIL_ANEMIA_INDEX (default = invert).
       2. Multi-feature OpenCV analyzer → pallor, koilonychia, ridging,
          brittleness, platonychia, yellowing → P_features(anemia).
-      3. Blend  60% model  +  40% features  → final P(anemia).
+      3. If model is highly confident (above NAIL_CONFIDENT_ANEMIA_THRESHOLD
+         or below NAIL_CONFIDENT_NON_ANEMIA_THRESHOLD) → trust CNN directly.
+         Otherwise blend: 60% model + 40% features.
     """
-    batch = tta_batch(img)
+    batch = tta_batch_efficientnet(img)
     preds = np.asarray(model.predict(batch, verbose=0))
 
     if NAIL_SIGMOID or preds.shape[-1] == 1:
         p_model_anemia = _sigmoid_to_p_anemia(preds, NAIL_ANEMIA_INDEX)
     else:
-        # If a future model is multi-class softmax, take the "anemia" column.
         probs = preds.mean(axis=0)
         p_model_anemia = float(probs[NAIL_ANEMIA_INDEX])
 
@@ -102,7 +106,6 @@ def predict_nail(model, img: Image.Image) -> dict:
         "model": "EfficientNetB0-binary + OpenCV clinical analyzer",
     }
 
-
 def to_screening_result(
     image_type: str,
     p_anemia: float,
@@ -111,15 +114,37 @@ def to_screening_result(
     attention_regions: list,
     quality: dict,
 ) -> dict:
-    """Shape the output to match the existing screening contract used by the frontend."""
-    from .config import risk_label
 
     pct = int(round(p_anemia * 100))
-    findings = []
+
+    # -----------------------------
+    # Separate risk labels
+    # -----------------------------
     if image_type == "nail":
+        if pct < 65:
+            label = "Normal / Non-Anemic"
+        elif pct < 85:
+            label = "Moderate Anemia Risk"
+        else:
+            label = "High Anemia Risk"
+
+    else:
+        from .config import risk_label
+        label = risk_label(pct)
+
+    findings = []
+
+    if image_type == "nail":
+
         cf = extras.get("clinical_features") or {}
-        signs_present = [k for k, v in cf.items() if v > 0.30]
+
+        signs_present = [
+            k for k, v in cf.items()
+            if v > 0.30
+        ]
+
         if signs_present:
+
             pretty = {
                 "pallor": "nail-bed pallor",
                 "koilonychia": "spoon-shape (koilonychia)",
@@ -128,39 +153,84 @@ def to_screening_result(
                 "platonychia": "flattened nail plate",
                 "yellowing": "yellow tint",
             }
-            findings.append("Clinical signs detected: " + ", ".join(pretty.get(s, s) for s in signs_present))
-        else:
-            findings.append("No strong anemia-related nail signs detected")
-        findings.append(f"Nail-bed pallor: {round(cf.get('pallor', 0)*100)}%")
-        if "p_model_anemia" in extras:
-            findings.append(f"AI model confidence in anemia: {round(extras['p_model_anemia']*100)}%")
-    if image_type == "eye":
-        findings.append(f"Conjunctival pallor probability: {pct}%")
-        findings.append(f"Risk level: {risk_label(pct)}")
-    if quality and not quality.get("passed", True):
-        findings.append("⚠ " + " | ".join(quality.get("issues", [])))
-    findings.append(f"Overall anemia likelihood: {pct}%")
 
-    reasoning = (
-        "We combined an AI model that learned what anemic nails look like with "
-        "a separate vision check that measures real clinical signs (pallor, "
-        "ridging, koilonychia, brittleness, flatness, yellow tint). The model "
-        "gives the overall feel, and the clinical checks tell us why."
-        if image_type == "nail" else
-        "We analysed the inner lower eyelid for paleness using a deep-learning "
-        "model with multi-view averaging for stability. For best accuracy use a "
-        "sharp, well-lit photo of the inner lower eyelid."
-    )
+            findings.append(
+                "Clinical signs detected: "
+                + ", ".join(pretty[s] for s in signs_present)
+            )
+
+        else:
+            findings.append(
+                "No significant anemia-related nail changes detected."
+            )
+
+        findings.append(
+            f"Nail-bed pallor: {round(cf.get('pallor',0)*100)}%"
+        )
+
+        findings.append(
+            f"Overall anemia likelihood: {pct}%"
+        )
+
+    else:
+
+        findings.append(
+            f"Conjunctival pallor probability: {pct}%"
+        )
+
+        findings.append(
+            f"Risk level: {label}"
+        )
+
+    if quality and not quality.get("passed", True):
+        findings.append(
+            "⚠ " + " | ".join(quality.get("issues", []))
+        )
+
+    if image_type == "nail":
+
+        reasoning = (
+            "The nail image was analysed using EfficientNetB0 with "
+            "Test-Time Augmentation. OpenCV then evaluated clinical "
+            "features including nail-bed pallor, koilonychia, ridging, "
+            "brittleness, platonychia and yellow discoloration. "
+            "The OpenCV findings adjusted the AI prediction before "
+            "producing the final hybrid anemia risk."
+        )
+
+    else:
+
+        reasoning = (
+            "The inner lower eyelid was analysed using EfficientNetB0 "
+            "with Test-Time Augmentation. Grad-CAM highlighted the "
+            "conjunctival region contributing most to the prediction."
+        )
 
     return {
+
         "image_type": image_type,
+
         "risk_percent": pct,
-        "risk_label": risk_label(pct),
+
+        "risk_label": label,
+
         "confidence": confidence,
-        "pallor_score": min(10, max(0, round(p_anemia * 10))),
+
+        "pallor_score": min(
+            10,
+            max(
+                0,
+                round(p_anemia * 10)
+            )
+        ),
+
         "key_findings": findings[:4],
+
         "attention_regions": attention_regions,
+
         "reasoning": reasoning,
+
         "model_extras": extras,
+
         "quality": quality,
     }
